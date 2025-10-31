@@ -7,6 +7,7 @@ import tempfile
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
+from flask_cors import CORS
 
 import pandas as pd
 import requests
@@ -20,6 +21,7 @@ from langchain_aws import ChatBedrock, BedrockLLM
 # -------------------- LOAD ENV --------------------
 load_dotenv()
 app = Flask(__name__)
+CORS(app)
 
 AWS_ACCESS_KEY = os.getenv("access_key")
 AWS_SECRET_KEY = os.getenv("secret_access_key")
