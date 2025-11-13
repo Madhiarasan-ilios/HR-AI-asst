@@ -4,15 +4,16 @@ import io
 import csv
 import base64
 import tempfile
+import asyncio
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
-from flask_cors import CORS
 
 import pandas as pd
 import requests
 import boto3
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from dotenv import load_dotenv
 from docx import Document
 from docx.shared import Pt
@@ -23,12 +24,13 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
+# -------------------- CONFIG --------------------
 AWS_ACCESS_KEY = os.getenv("access_key")
 AWS_SECRET_KEY = os.getenv("secret_access_key")
 AWS_REGION = os.getenv("region_name", "ap-south-1")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-# -------------------- AWS SESSIONS & LLMs --------------------
+# -------------------- AWS CLIENTS & LLM --------------------
 session = boto3.Session(
     aws_access_key_id=AWS_ACCESS_KEY,
     aws_secret_access_key=AWS_SECRET_KEY,
@@ -64,7 +66,6 @@ def clean_bedrock_response(response) -> str:
     clean = re.sub(r'usage_metadata=.*', '', clean)
     return clean.strip().strip('"').strip("'").strip()
 
-
 def ask_bedrock(prompt: str, use_model="claude") -> str:
     try:
         llm = claude_llm if use_model == "claude" else llama_llm
@@ -72,7 +73,6 @@ def ask_bedrock(prompt: str, use_model="claude") -> str:
         return clean_bedrock_response(response)
     except Exception as e:
         return f"Bedrock error: {e}"
-
 
 def create_word_doc(content: str, filename: str) -> io.BytesIO:
     doc = Document()
@@ -113,7 +113,6 @@ def create_word_doc(content: str, filename: str) -> io.BytesIO:
     buffer.seek(0)
     return buffer
 
-
 def save_upload_to_temp(upload_file) -> str:
     suffix = os.path.splitext(upload_file.filename or "")[1]
     tf = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -126,7 +125,6 @@ def save_upload_to_temp(upload_file) -> str:
 # -------------------------------------------------------------------
 #                        ENDPOINT 1: /generate_jd
 # -------------------------------------------------------------------
-
 @app.route("/generate_jd", methods=["POST"])
 def generate_jd():
     try:
@@ -142,7 +140,6 @@ def generate_jd():
         if not role:
             return jsonify({"error": "Missing required field: 'role'"}), 400
 
-        # Step 1: Market JDs
         postings = []
         try:
             resp = requests.get("https://serpapi.com/search", params={
@@ -158,7 +155,6 @@ def generate_jd():
         except Exception as e:
             print(f"SERP error: {e}")
 
-        # Step 2: Analysis
         if postings:
             joined = "\n\n".join(postings[:5])
             analysis_prompt = f"""
@@ -173,11 +169,8 @@ def generate_jd():
         else:
             analysis = "No market data found."
 
-        # Step 3: Generate JD
         jd_prompt = f"""
         Write an inclusive Job Description for {role} in {location}.
-
-        Requirements:
         Experience: {experience}
         Domain: {domain}
         Company Values: {company_values}
@@ -186,22 +179,11 @@ def generate_jd():
 
         Market Insights:
         {analysis}
-
-        Follow this structure:
-        Job Description:
-        Intro Section:
-        Objectives of this role:
-        Your tasks:
-        Required skills and qualifications:
-        Preferred skills and qualifications:
         """
         jd_text = ask_bedrock(jd_prompt, use_model="claude")
-
-        # Step 4: Bias Review
         bias_prompt = f"Review this JD for bias and suggest improvements:\n\n{jd_text}"
         bias_feedback = ask_bedrock(bias_prompt, use_model="claude")
 
-        # Step 5: Word Doc
         buffer = create_word_doc(jd_text, f"{role}_JD.docx")
         b64_doc = base64.b64encode(buffer.getvalue()).decode()
 
@@ -221,7 +203,6 @@ def generate_jd():
 # -------------------------------------------------------------------
 #                        ENDPOINT 2: /source_candidates
 # -------------------------------------------------------------------
-
 FEW_SHOT_EXAMPLES = [
     {
         "input": "Full Stack Developer with React, Node.js and MySQL",
@@ -248,15 +229,12 @@ def source_candidates():
         ])
         prompt = f"""
         You are an AI that converts job descriptions into LinkedIn Boolean queries.
-
         {examples_text}
-
         Job Description: {jd_text}
         Boolean Query:
         """
         boolean_query = ask_bedrock(prompt, use_model="llama")
 
-        # Search
         url = "https://serpapi.com/search"
         params = {"engine": "google", "q": f"site:linkedin.com/in/ {boolean_query}", "num": num_results, "api_key": SERP_API_KEY}
         resp = requests.get(url, params=params)
@@ -339,6 +317,82 @@ def evaluate_resumes():
                 os.remove(f)
             except:
                 pass
+
+
+# -------------------------------------------------------------------
+#                        ENDPOINTS 4–7 (Interview Features)
+# -------------------------------------------------------------------
+from first_level_screening.aws_services.polly import PollyClient
+from first_level_screening.aws_services.transcribe import start_transcription
+from first_level_screening.langchain_logic.chains import (
+    get_question_generation_chain,
+    get_report_generation_chain,
+)
+
+REGION = "ap-south-1"
+MODEL_ID = "meta.llama3-70b-instruct-v1:0"
+
+@app.route("/generate_questions", methods=["POST"])
+def generate_questions():
+    data = request.get_json()
+    jd = data.get("jd")
+    resume = data.get("resume")
+    if not jd or not resume:
+        return jsonify({"error": "Missing JD or Resume"}), 400
+    
+    chain = get_question_generation_chain(model_id=MODEL_ID, region_name=REGION)
+    result = chain.invoke({"jd": jd, "resume": resume})
+    return jsonify({"questions": result.questions})
+
+@app.route("/get_question_audio", methods=["GET"])
+def get_question_audio():
+    question = request.args.get("question")
+    if not question:
+        return jsonify({"error": "Missing question"}), 400
+    polly = PollyClient(region_name=REGION)
+    audio_stream = polly.synthesize_to_stream(question)
+    audio_bytes = io.BytesIO(audio_stream.read())
+    return send_file(audio_bytes, mimetype="audio/mpeg")
+
+@app.route("/transcribe_answer", methods=["POST"])
+def transcribe_answer():
+    audio_file = request.files.get("audio")
+    if not audio_file:
+        return jsonify({"error": "No audio uploaded"}), 400
+
+    async def run_transcription():
+        audio_bytes = audio_file.read()
+        result = await start_transcription(audio_bytes, region=REGION)
+        return result
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    transcription = loop.run_until_complete(run_transcription())
+    loop.close()
+    return jsonify({"transcript": transcription})
+
+@app.route("/generate_report", methods=["POST"])
+def generate_report():
+    data = request.get_json()
+    jd = data.get("jd")
+    resume = data.get("resume")
+    transcript = data.get("transcript")
+    if not (jd and resume and transcript):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    report_chain = get_report_generation_chain(model_id=MODEL_ID, region_name=REGION)
+    report = report_chain.invoke({
+        "jd": jd,
+        "resume": resume,
+        "transcript": transcript
+    })
+
+    return jsonify({
+        "summary": report.summary,
+        "key_strengths": report.key_strengths,
+        "areas_for_improvement": report.areas_for_improvement,
+        "recommendation": report.recommendation
+    })
 
 
 # -------------------------------------------------------------------
