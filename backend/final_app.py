@@ -1,36 +1,68 @@
+# ============================
+#      MERGED FLASK APP
+# ============================
+
 import os
 import re
 import io
 import csv
 import base64
 import tempfile
-import asyncio
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
 
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import pandas as pd
 import requests
 import boto3
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
 from dotenv import load_dotenv
 from docx import Document
 from docx.shared import Pt
+
+# ---- Bedrock + AWS imports from Code2 ----
+import asyncio
+import logging
+from aws_services.polly import PollyClient
+from aws_services.transcribe import start_transcription
+from langchain_logic.chains import (
+    get_question_generation_chain,
+    get_report_generation_chain,
+)
+
+# ---- LangChain AWS models (Code1) ----
 from langchain_aws import ChatBedrock, BedrockLLM
 
-# -------------------- LOAD ENV --------------------
+# ---- Resume evaluation from Code1 ----
+from app.aws_parsing import evaluate_resume_skills_with_time, calculate_relevance
+from app.aws_skillset import final_claude
+from app.aws_chunck_ext import final_chunks
+
+# ============================
+#       INITIAL SETUP
+# ============================
+
 load_dotenv()
+
 app = Flask(__name__)
 CORS(app)
 
-# -------------------- CONFIG --------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 AWS_ACCESS_KEY = os.getenv("access_key")
 AWS_SECRET_KEY = os.getenv("secret_access_key")
 AWS_REGION = os.getenv("region_name", "ap-south-1")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-# -------------------- AWS CLIENTS & LLM --------------------
+REGION = AWS_REGION
+MODEL_ID = "meta.llama3-70b-instruct-v1:0"   # interviewer model
+
+# ============================
+#     AWS SESSIONS & LLMs
+# ============================
+
 session = boto3.Session(
     aws_access_key_id=AWS_ACCESS_KEY,
     aws_secret_access_key=AWS_SECRET_KEY,
@@ -51,13 +83,14 @@ llama_llm = BedrockLLM(
     region=AWS_REGION
 )
 
-# -------------------------------------------------------------------
-#                         SHARED HELPERS
-# -------------------------------------------------------------------
+# ============================
+#      SHARED HELPERS
+# ============================
 
 def clean_bedrock_response(response) -> str:
     text = response if isinstance(response, str) else str(response)
-    match = re.search(r'content="(.*?)"\s*(?:additional_kwargs|response_metadata|$)', text, re.DOTALL)
+    match = re.search(r'content="(.*?)"\s*(?:additional_kwargs|response_metadata|$)',
+                      text, re.DOTALL)
     clean = match.group(1) if match else text
     clean = clean.encode('utf-8').decode('unicode_escape')
     clean = re.sub(r'additional_kwargs=.*', '', clean)
@@ -66,6 +99,7 @@ def clean_bedrock_response(response) -> str:
     clean = re.sub(r'usage_metadata=.*', '', clean)
     return clean.strip().strip('"').strip("'").strip()
 
+
 def ask_bedrock(prompt: str, use_model="claude") -> str:
     try:
         llm = claude_llm if use_model == "claude" else llama_llm
@@ -73,6 +107,7 @@ def ask_bedrock(prompt: str, use_model="claude") -> str:
         return clean_bedrock_response(response)
     except Exception as e:
         return f"Bedrock error: {e}"
+
 
 def create_word_doc(content: str, filename: str) -> io.BytesIO:
     doc = Document()
@@ -113,6 +148,7 @@ def create_word_doc(content: str, filename: str) -> io.BytesIO:
     buffer.seek(0)
     return buffer
 
+
 def save_upload_to_temp(upload_file) -> str:
     suffix = os.path.splitext(upload_file.filename or "")[1]
     tf = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -122,9 +158,10 @@ def save_upload_to_temp(upload_file) -> str:
     return tf.name
 
 
-# -------------------------------------------------------------------
-#                        ENDPOINT 1: /generate_jd
-# -------------------------------------------------------------------
+# ============================
+#     ENDPOINT 1: GENERATE JD
+# ============================
+
 @app.route("/generate_jd", methods=["POST"])
 def generate_jd():
     try:
@@ -173,14 +210,23 @@ def generate_jd():
         Write an inclusive Job Description for {role} in {location}.
         Experience: {experience}
         Domain: {domain}
+        Responsibilities: {job_responsibilities}
         Company Values: {company_values}
         Diversity: {diversity}
-        Responsibilities: {job_responsibilities}
 
         Market Insights:
         {analysis}
+
+        Follow this structure:
+        Job Description:
+        Intro Section:
+        Objectives of this role:
+        Your tasks:
+        Required skills and qualifications:
+        Preferred skills and qualifications:
         """
         jd_text = ask_bedrock(jd_prompt, use_model="claude")
+
         bias_prompt = f"Review this JD for bias and suggest improvements:\n\n{jd_text}"
         bias_feedback = ask_bedrock(bias_prompt, use_model="claude")
 
@@ -200,9 +246,10 @@ def generate_jd():
         return jsonify({"error": str(e)}), 500
 
 
-# -------------------------------------------------------------------
-#                        ENDPOINT 2: /source_candidates
-# -------------------------------------------------------------------
+# ============================
+#  ENDPOINT 2: SOURCE CANDIDATES
+# ============================
+
 FEW_SHOT_EXAMPLES = [
     {
         "input": "Full Stack Developer with React, Node.js and MySQL",
@@ -227,18 +274,28 @@ def source_candidates():
             f"Job Description: {ex['input']}\nBoolean Query: {ex['output']}"
             for ex in FEW_SHOT_EXAMPLES
         ])
+
         prompt = f"""
-        You are an AI that converts job descriptions into LinkedIn Boolean queries.
+        Convert the job description into a LinkedIn Boolean query.
+
         {examples_text}
+
         Job Description: {jd_text}
         Boolean Query:
         """
+
         boolean_query = ask_bedrock(prompt, use_model="llama")
 
         url = "https://serpapi.com/search"
-        params = {"engine": "google", "q": f"site:linkedin.com/in/ {boolean_query}", "num": num_results, "api_key": SERP_API_KEY}
+        params = {
+            "engine": "google",
+            "q": f"site:linkedin.com/in/ {boolean_query}",
+            "num": num_results,
+            "api_key": SERP_API_KEY
+        }
         resp = requests.get(url, params=params)
         data = resp.json()
+
         profiles = [
             {"Name": r.get("title"), "Snippet": r.get("snippet"), "Link": r.get("link")}
             for r in data.get("organic_results", [])
@@ -256,16 +313,14 @@ def source_candidates():
             "candidates_csv_base64": csv_b64,
             "filename": "candidates.csv"
         })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# -------------------------------------------------------------------
-#                        ENDPOINT 3: /evaluate_resumes
-# -------------------------------------------------------------------
-from app.aws_parsing import evaluate_resume_skills_with_time, calculate_relevance
-from app.aws_skillset import final_claude
-from app.aws_chunck_ext import final_chunks
+# ============================
+#  ENDPOINT 3: RESUME EVALUATION
+# ============================
 
 @app.route("/evaluate_resumes", methods=["POST"])
 def evaluate_resumes():
@@ -288,12 +343,24 @@ def evaluate_resumes():
                 path = save_upload_to_temp(resume_file)
                 temp_files.append(path)
                 doc_content = final_chunks(path)
-                weights_json, in_tokens, out_tokens = evaluate_resume_skills_with_time(llama_llm, doc_content, ranking_skills)
+                weights_json, in_tokens, out_tokens = evaluate_resume_skills_with_time(
+                    llama_llm, doc_content, ranking_skills
+                )
                 score, reasons = calculate_relevance(weights_json)
                 cost = (in_tokens * 0.00318) + (out_tokens * 0.0042)
-                return {"Candidate Name": os.path.splitext(resume_file.filename)[0], "Similarity (%)": round(score, 2), "Reasons": reasons, "Cost": round(cost, 4)}
+                return {
+                    "Candidate Name": os.path.splitext(resume_file.filename)[0],
+                    "Similarity (%)": round(score, 2),
+                    "Reasons": reasons,
+                    "Cost": round(cost, 4)
+                }
             except Exception as e:
-                return {"Candidate Name": resume_file.filename, "Similarity (%)": 0, "Reasons": str(e), "Cost": 0}
+                return {
+                    "Candidate Name": resume_file.filename,
+                    "Similarity (%)": 0,
+                    "Reasons": str(e),
+                    "Cost": 0
+                }
 
         with ThreadPoolExecutor() as pool:
             for f in pool.map(process_resume, resumes):
@@ -311,6 +378,7 @@ def evaluate_resumes():
             "top_5": df.head(5).to_dict(orient="records"),
             "processing_time_seconds": duration
         })
+
     finally:
         for f in locals().get("temp_files", []):
             try:
@@ -319,69 +387,80 @@ def evaluate_resumes():
                 pass
 
 
-# -------------------------------------------------------------------
-#                        ENDPOINTS 4–7 (Interview Features)
-# -------------------------------------------------------------------
-from first_level_screening.aws_services.polly import PollyClient
-from first_level_screening.aws_services.transcribe import start_transcription
-from first_level_screening.langchain_logic.chains import (
-    get_question_generation_chain,
-    get_report_generation_chain,
-)
+# ============================
+#     INTERVIEWER ENDPOINTS
+# ============================
 
-REGION = "ap-south-1"
-MODEL_ID = "meta.llama3-70b-instruct-v1:0"
-
-@app.route("/generate_questions", methods=["POST"])
+@app.route("/generate-questions", methods=["POST"])
 def generate_questions():
     data = request.get_json()
     jd = data.get("jd")
     resume = data.get("resume")
+
     if not jd or not resume:
-        return jsonify({"error": "Missing JD or Resume"}), 400
-    
+        return jsonify({"error": "jd and resume required"}), 400
+
     chain = get_question_generation_chain(model_id=MODEL_ID, region_name=REGION)
     result = chain.invoke({"jd": jd, "resume": resume})
+
     return jsonify({"questions": result.questions})
 
-@app.route("/get_question_audio", methods=["GET"])
-def get_question_audio():
-    question = request.args.get("question")
+
+@app.route("/speak-question", methods=["POST"])
+def speak_question():
+    data = request.get_json()
+    question = data.get("question")
+
     if not question:
-        return jsonify({"error": "Missing question"}), 400
+        return jsonify({"error": "question is required"}), 400
+
     polly = PollyClient(region_name=REGION)
     audio_stream = polly.synthesize_to_stream(question)
-    audio_bytes = io.BytesIO(audio_stream.read())
-    return send_file(audio_bytes, mimetype="audio/mpeg")
+    audio_bytes = audio_stream.read()
 
-@app.route("/transcribe_answer", methods=["POST"])
-def transcribe_answer():
-    audio_file = request.files.get("audio")
-    if not audio_file:
-        return jsonify({"error": "No audio uploaded"}), 400
+    return audio_bytes, 200, {"Content-Type": "audio/mpeg"}
 
-    async def run_transcription():
-        audio_bytes = audio_file.read()
-        result = await start_transcription(audio_bytes, region=REGION)
-        return result
+
+@app.route("/transcribe-audio", methods=["POST"])
+def transcribe_audio():
+    if "audio" not in request.files:
+        return jsonify({"error": "No 'audio' file provided"}), 400
+
+    audio_file = request.files["audio"]
+    audio_bytes = audio_file.read()
+
+    async def run():
+        async def audio_stream():
+            yield audio_bytes
+
+        final_text = await start_transcription(
+            audio_stream=audio_stream(),
+            transcript_callback=None,
+            region=REGION,
+        )
+        return final_text
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    transcription = loop.run_until_complete(run_transcription())
+    final_text = loop.run_until_complete(run())
     loop.close()
-    return jsonify({"transcript": transcription})
 
-@app.route("/generate_report", methods=["POST"])
+    return jsonify({"transcript": final_text})
+
+
+@app.route("/generate-report", methods=["POST"])
 def generate_report():
     data = request.get_json()
+
     jd = data.get("jd")
     resume = data.get("resume")
     transcript = data.get("transcript")
-    if not (jd and resume and transcript):
-        return jsonify({"error": "Missing required fields"}), 400
-    
-    report_chain = get_report_generation_chain(model_id=MODEL_ID, region_name=REGION)
-    report = report_chain.invoke({
+
+    if not jd or not resume or not transcript:
+        return jsonify({"error": "jd, resume, transcript required"}), 400
+
+    chain = get_report_generation_chain(model_id=MODEL_ID, region_name=REGION)
+    report = chain.invoke({
         "jd": jd,
         "resume": resume,
         "transcript": transcript
@@ -395,8 +474,9 @@ def generate_report():
     })
 
 
-# -------------------------------------------------------------------
-#                           MAIN
-# -------------------------------------------------------------------
+# ============================
+#           MAIN
+# ============================
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
