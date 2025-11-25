@@ -393,15 +393,18 @@ def evaluate_resumes():
 
 @app.route("/generate-questions", methods=["POST"])
 def generate_questions():
-    data = request.get_json()
-    jd = data.get("jd")
-    resume = data.get("resume")
+    jd_file = request.files.get("jd")
+    resume_file = request.files.get("resume")
 
-    if not jd or not resume:
-        return jsonify({"error": "jd and resume required"}), 400
+    if not jd_file or not resume_file:
+        return jsonify({"error": "jd and resume files are required"}), 400
+
+    # Convert files to text
+    jd_text = jd_file.read().decode("utf-8", errors="ignore")
+    resume_text = resume_file.read().decode("utf-8", errors="ignore")
 
     chain = get_question_generation_chain(model_id=MODEL_ID, region_name=REGION)
-    result = chain.invoke({"jd": jd, "resume": resume})
+    result = chain.invoke({"jd": jd_text, "resume": resume_text})
 
     return jsonify({"questions": result.questions})
 
@@ -450,19 +453,21 @@ def transcribe_audio():
 
 @app.route("/generate-report", methods=["POST"])
 def generate_report():
-    data = request.get_json()
+    jd_file = request.files.get("jd")
+    resume_file = request.files.get("resume")
+    transcript = request.form.get("transcript")
 
-    jd = data.get("jd")
-    resume = data.get("resume")
-    transcript = data.get("transcript")
+    if not jd_file or not resume_file or not transcript:
+        return jsonify({"error": "jd file, resume file, and transcript are required"}), 400
 
-    if not jd or not resume or not transcript:
-        return jsonify({"error": "jd, resume, transcript required"}), 400
+    # Convert files to text
+    jd_text = jd_file.read().decode("utf-8", errors="ignore")
+    resume_text = resume_file.read().decode("utf-8", errors="ignore")
 
     chain = get_report_generation_chain(model_id=MODEL_ID, region_name=REGION)
     report = chain.invoke({
-        "jd": jd,
-        "resume": resume,
+        "jd": jd_text,
+        "resume": resume_text,
         "transcript": transcript
     })
 
