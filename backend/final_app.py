@@ -89,8 +89,11 @@ llama_llm = BedrockLLM(
 
 def clean_bedrock_response(response) -> str:
     text = response if isinstance(response, str) else str(response)
-    match = re.search(r'content="(.*?)"\s*(?:additional_kwargs|response_metadata|$)',
-                      text, re.DOTALL)
+    match = re.search(
+        r'content="(.*?)"\s*(?:additional_kwargs|response_metadata|$)',
+        text,
+        re.DOTALL
+    )
     clean = match.group(1) if match else text
     clean = clean.encode('utf-8').decode('unicode_escape')
     clean = re.sub(r'additional_kwargs=.*', '', clean)
@@ -114,7 +117,8 @@ def create_word_doc(content: str, filename: str) -> io.BytesIO:
     doc.add_heading("Job Description", level=1)
     sections = re.split(
         r'^(Job Description:|Intro Section:|Objectives of this role:|Your tasks:|Required skills and qualifications:|Preferred skills and qualifications:)',
-        content, flags=re.MULTILINE | re.IGNORECASE
+        content,
+        flags=re.MULTILINE | re.IGNORECASE
     )
 
     for i in range(1, len(sections), 2):
@@ -424,31 +428,87 @@ def speak_question():
     return audio_bytes, 200, {"Content-Type": "audio/mpeg"}
 
 
+# ============================
+#  UPDATED: TRANSCRIBE AUDIO
+# ============================
+
 @app.route("/transcribe-audio", methods=["POST"])
 def transcribe_audio():
     if "audio" not in request.files:
-        return jsonify({"error": "No 'audio' file provided"}), 400
+        return jsonify({"error": "No audio file provided"}), 400
 
     audio_file = request.files["audio"]
-    audio_bytes = audio_file.read()
+    file_path = save_upload_to_temp(audio_file)
 
-    async def run():
-        async def audio_stream():
-            yield audio_bytes
+    try:
+        # Upload to S3
+        s3 = boto3.client("s3", region_name=REGION)
+        bucket = os.getenv("TRANSCRIBE_BUCKET_NAME")
+        if not bucket:
+            return jsonify({"error": "TRANSCRIBE_BUCKET_NAME not set in .env"}), 500
 
-        final_text = await start_transcription(
-            audio_stream=audio_stream(),
-            transcript_callback=None,
-            region=REGION,
+        object_key = os.path.basename(file_path)
+        s3.upload_file(file_path, bucket, object_key)
+
+        # Start Transcribe Batch Job
+        transcribe = boto3.client("transcribe", region_name=REGION)
+        job_name = f"transcribe_job_{int(datetime.now().timestamp())}"
+
+        media_format = os.path.splitext(object_key)[1][1:].lower()
+        if media_format not in ["wav", "mp3", "mp4", "flac", "ogg"]:
+            media_format = "mp3"  # fallback
+
+        transcribe.start_transcription_job(
+            TranscriptionJobName=job_name,
+            Media={"MediaFileUri": f"s3://{bucket}/{object_key}"},
+            MediaFormat=media_format,
+            LanguageCode="en-US",
         )
-        return final_text
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    final_text = loop.run_until_complete(run())
-    loop.close()
+        return jsonify({
+            "message": "Transcription job started",
+            "job_name": job_name,
+            "audio_file": object_key
+        })
 
-    return jsonify({"transcript": final_text})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    finally:
+        try:
+            os.remove(file_path)
+        except:
+            pass
+
+
+# NEW: POLL TRANSCRIPTION RESULT
+@app.route("/get-transcription-result", methods=["GET"])
+def get_transcription_result():
+    job_name = request.args.get("job_name")
+    if not job_name:
+        return jsonify({"error": "job_name is required"}), 400
+
+    transcribe = boto3.client("transcribe", region_name=REGION)
+    response = transcribe.get_transcription_job(
+        TranscriptionJobName=job_name
+    )
+    status = response["TranscriptionJob"]["TranscriptionJobStatus"]
+
+    if status == "FAILED":
+        return jsonify({"status": "FAILED"}), 500
+
+    if status != "COMPLETED":
+        return jsonify({"status": status}), 200
+
+    transcript_url = response["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
+    # Download transcript JSON
+    transcript_resp = requests.get(transcript_url).json()
+    text = transcript_resp["results"]["transcripts"][0]["transcript"]
+
+    return jsonify({
+        "status": "COMPLETED",
+        "transcript": text
+    })
 
 
 @app.route("/generate-report", methods=["POST"])
