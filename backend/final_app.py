@@ -57,7 +57,7 @@ AWS_REGION = os.getenv("region_name", "ap-south-1")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 REGION = AWS_REGION
-MODEL_ID = "meta.llama3-70b-instruct-v1:0"   # interviewer model
+MODEL_ID = "anthropic.claude-3-sonnet-20240229-v1:0"   # interviewer model
 
 # ============================
 #     AWS SESSIONS & LLMs
