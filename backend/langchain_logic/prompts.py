@@ -51,17 +51,18 @@ You are an expert interview performance evaluator.
 Your task is to analyze the interview transcript and generate a structured assessment of the candidate. 
 Evaluate communication clarity, technical depth, reasoning ability, and confidence.
 
-You MUST return output **STRICTLY** in valid JSON format that matches the following schema, with no additional text before or after:
+You MUST return output STRICTLY in valid JSON format that matches the following schema, with no additional text before or after:
 
-{
+{{
   "summary": "string",
   "key_strengths": ["string"],
   "areas_for_improvement": ["string"],
   "recommendation": "string"
-}
+}}
 
 Do not include explanations, headings, notes, or sentences outside of the JSON object.
-""",
+Only output valid JSON.
+"""
     ),
     (
         "human",
