@@ -2,7 +2,7 @@
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_aws import ChatBedrock  # adjust if your Bedrock client import differs
-from .prompts import QUESTION_GEN_PROMPT, REPORT_GEN_PROMPT
+from .prompts import QUESTION_GEN_PROMPT, REPORT_GEN_PROMPT_TRANSCRIPT_ONLY
 from .schemas import QuestionsOutput, ReportOutput
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.prompts import SystemMessagePromptTemplate
@@ -46,7 +46,8 @@ def get_report_generation_chain(model_id: str, region_name: str = None):
     """
     Constructs and returns a chain:
       prompt -> model -> parser
-    for generating the screening report.
+    for generating transcript-only screening reports
+    without needing resume or job description.
     """
     llm = ChatBedrock(
         model_id=model_id,
@@ -57,9 +58,9 @@ def get_report_generation_chain(model_id: str, region_name: str = None):
     parser = PydanticOutputParser(pydantic_object=ReportOutput)
     format_instructions = escape_curly_braces(parser.get_format_instructions())
 
-    enhanced_prompt = REPORT_GEN_PROMPT.copy()
+    enhanced_prompt = REPORT_GEN_PROMPT_TRANSCRIPT_ONLY.copy()
     enhanced_prompt.messages[0] = SystemMessagePromptTemplate.from_template(
-        REPORT_GEN_PROMPT.messages[0].prompt.template
+        REPORT_GEN_PROMPT_TRANSCRIPT_ONLY.messages[0].prompt.template
         + "\n\nFollow these output format rules strictly:\n"
         + format_instructions
     )

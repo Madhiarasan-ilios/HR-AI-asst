@@ -41,3 +41,19 @@ REPORT_GEN_PROMPT = ChatPromptTemplate.from_messages([
     SystemMessagePromptTemplate.from_template(REPORT_GEN_SYSTEM),
     HumanMessagePromptTemplate.from_template(REPORT_GEN_HUMAN),
 ])
+
+REPORT_GEN_PROMPT_TRANSCRIPT_ONLY = ChatPromptTemplate.from_messages([
+    (
+        "system",
+        """
+You are an expert interview evaluator. Generate a performance report based ONLY on the transcript of a candidate interview.
+Analyze communication quality, technical depth, reasoning ability, clarity, and confidence.
+
+Provide output in STRUCTURED way according to the ReportOutput schema.
+
+DO NOT request resume or job description. Evaluate purely from behavior and spoken responses.
+""",
+    ),
+    ("human", "Interview Transcript:\n{transcript}")
+])
+

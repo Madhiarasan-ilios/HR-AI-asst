@@ -514,31 +514,28 @@ def get_transcription_result():
 
 @app.route("/generate-report", methods=["POST"])
 def generate_report():
-    jd_file = request.files.get("jd")
-    resume_file = request.files.get("resume")
-    transcript = request.form.get("transcript")
+    
+    data = request.get_json
+    transcript = data.get("transcript")
 
-    if not jd_file or not resume_file or not transcript:
-        return jsonify({"error": "jd file, resume file, and transcript are required"}), 400
+    if not transcript:
+        return jsonify({"error": "Transcript is required"}), 400
 
-    # Convert files to text
-    jd_text = jd_file.read().decode("utf-8", errors="ignore")
-    resume_text = resume_file.read().decode("utf-8", errors="ignore")
+    try:
+        chain = get_report_generation_chain(model_id=MODEL_ID, region_name=REGION)
+        report = chain.invoke({
+            "transcript": transcript
+        })
 
-    chain = get_report_generation_chain(model_id=MODEL_ID, region_name=REGION)
-    report = chain.invoke({
-        "jd": jd_text,
-        "resume": resume_text,
-        "transcript": transcript
-    })
+        return jsonify({
+            "summary": report.summary,
+            "key_strengths": report.key_strengths,
+            "areas_for_improvement": report.areas_for_improvement,
+            "recommendation": report.recommendation
+        })
 
-    return jsonify({
-        "summary": report.summary,
-        "key_strengths": report.key_strengths,
-        "areas_for_improvement": report.areas_for_improvement,
-        "recommendation": report.recommendation
-    })
-
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ============================
 #           MAIN
