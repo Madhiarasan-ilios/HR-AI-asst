@@ -515,7 +515,7 @@ def get_transcription_result():
 @app.route("/generate-report", methods=["POST"])
 def generate_report():
     
-    data = request.get_json
+    data = request.get_json()
     transcript = data.get("transcript")
 
     if not transcript:
