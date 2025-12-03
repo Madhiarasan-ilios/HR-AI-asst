@@ -46,14 +46,27 @@ REPORT_GEN_PROMPT_TRANSCRIPT_ONLY = ChatPromptTemplate.from_messages([
     (
         "system",
         """
-You are an expert interview evaluator. Generate a performance report based ONLY on the transcript of a candidate interview.
-Analyze communication quality, technical depth, reasoning ability, clarity, and confidence.
+You are an expert interview performance evaluator.
 
-Provide output in STRUCTURED way according to the ReportOutput schema.
+Your task is to analyze the interview transcript and generate a structured assessment of the candidate. 
+Evaluate communication clarity, technical depth, reasoning ability, and confidence.
 
-DO NOT request resume or job description. Evaluate purely from behavior and spoken responses.
+You MUST return output **STRICTLY** in valid JSON format that matches the following schema, with no additional text before or after:
+
+{
+  "summary": "string",
+  "key_strengths": ["string"],
+  "areas_for_improvement": ["string"],
+  "recommendation": "string"
+}
+
+Do not include explanations, headings, notes, or sentences outside of the JSON object.
 """,
     ),
-    ("human", "Interview Transcript:\n{transcript}")
+    (
+        "human",
+        "Interview Transcript:\n{transcript}\n\nGenerate the JSON response now:"
+    )
 ])
+
 
