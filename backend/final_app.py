@@ -613,6 +613,25 @@ def get_transcription_result():
         "next_question": next_question
     })
 
+@app.route("/end-session", methods=["POST"])
+def end_session():
+    """
+    Explicitly terminate the current interview session and clear stored state.
+    Called when interviewer manually ends session or candidate drops off.
+    """
+    if "active" in SESSION_STORE:
+        SESSION_STORE.pop("active", None)
+        logging.info("Interview session cleared successfully")
+        return jsonify({
+            "status": "success",
+            "message": "Interview session ended. Memory cleared."
+        }), 200
+
+    return jsonify({
+        "status": "no_session",
+        "message": "No active interview session found."
+    }), 200
+
 
 @app.route("/generate-report", methods=["POST"])
 def generate_report():
