@@ -70,4 +70,74 @@ Only output valid JSON.
     )
 ])
 
+# ================================
+# NEW PROMPT: Short Answer Check
+# ================================
+SHORT_ANSWER_SYSTEM = (
+    "You are assisting an HR voice interviewer. "
+    "Your task is to evaluate whether the candidate's answer is sufficiently detailed. "
+    "A good answer should contain at least one informative detail "
+    "(e.g., a technology name, years of experience, project description, etc.). "
+    "If the answer is vague, very short (< 7 words), or lacks content, it should be flagged "
+    "for a follow-up probing question."
+
+    "You MUST return output strictly in a valid JSON format:\n\n"
+    "{\n"
+    '  "needs_more_detail": true/false,\n'
+    '  "reason": "string explaining why"\n'
+    "}\n\n"
+    "Do not add any additional text outside the JSON response."
+)
+
+SHORT_ANSWER_HUMAN = (
+    "Candidate Answer:\n{answer}\n\n"
+    "Analyze and respond only in JSON as instructed."
+)
+
+SHORT_ANSWER_PROMPT = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(SHORT_ANSWER_SYSTEM),
+    HumanMessagePromptTemplate.from_template(SHORT_ANSWER_HUMAN),
+])
+
+
+# =============================================
+# NEW PROMPT: Structured Hiring Info Extraction
+# =============================================
+STRUCTURE_EXTRACTION_SYSTEM = (
+    "You extract hiring-related information from a candidate’s spoken answer. "
+    "Extract any details related to:\n"
+    "- Name\n"
+    "- Total experience\n"
+    "- Current CTC (salary)\n"
+    "- Expected CTC\n"
+    "- Notice period / Availability\n"
+    "- Primary technical skills\n"
+    "- Project highlights\n\n"
+
+    "If any field is missing, return an empty string or empty list for that field.\n\n"
+
+    "You MUST return output strictly in valid JSON format:\n\n"
+    "{\n"
+    '  "name": "string",\n'
+    '  "experience": "string",\n'
+    '  "current_ctc": "string",\n'
+    '  "expected_ctc": "string",\n'
+    '  "notice_period": "string",\n'
+    '  "skills": ["..."],\n'
+    '  "project_highlight": "string"\n'
+    "}\n\n"
+    "Do NOT include additional text outside the JSON object."
+)
+
+STRUCTURE_EXTRACTION_HUMAN = (
+    "Candidate Answer:\n{answer}\n\n"
+    "Extract details now strictly in the JSON format defined earlier."
+)
+
+STRUCTURE_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages([
+    SystemMessagePromptTemplate.from_template(STRUCTURE_EXTRACTION_SYSTEM),
+    HumanMessagePromptTemplate.from_template(STRUCTURE_EXTRACTION_HUMAN),
+])
+
+
 
