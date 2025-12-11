@@ -519,8 +519,7 @@ def transcribe_audio():
 # NEW: POLL TRANSCRIPTION RESULT (ENHANCED FLOW)
 @app.route("/get-transcription-result", methods=["GET"])
 def get_transcription_result():
-    data = request.get_json()
-    job_name = data.get("job_name") if data else None
+    job_name = request.args.get("job_name")
     if not job_name:
         return jsonify({"error": "job_name is required"}), 400
 
