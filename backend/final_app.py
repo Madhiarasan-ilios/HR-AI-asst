@@ -40,7 +40,9 @@ from langchain_aws import ChatBedrock, BedrockLLM
 from app.aws_parsing import evaluate_resume_skills_with_time, calculate_relevance
 from app.aws_skillset import final_claude
 from app.aws_chunck_ext import final_chunks
-
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 # ============================
 #       INITIAL SETUP
 # ============================
@@ -678,6 +680,61 @@ def generate_report():
 
     except Exception as e:
         logger.error(f"Error generating report: {e}")
+        return jsonify({"error": str(e)}), 500
+    
+def send_interview_email(candidate_email, interview_link):
+    # Your Gmail credentials
+    sender_email = "madhiarasan2248@gmail.com"
+    sender_password = "vggx uopv pina zlyf"  # NOT your normal gmail password
+
+    # Email content
+    subject = "Interview Invitation"
+    body = f"""
+    Hi,
+
+    We are pleased to invite you for the interview.
+    If you are interested, please attend using the following link:
+
+    {interview_link}
+
+    Best regards,
+    HR Team
+    """
+
+    # Build the email
+    message = MIMEMultipart()
+    message["From"] = sender_email
+    message["To"] = candidate_email
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain"))
+
+    try:
+        # Connect to Gmail SMTP Server
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+
+        # Send the mail
+        server.send_message(message)
+        server.quit()
+
+        print("Email sent successfully.")
+    except Exception as e:
+        print("Error occurred while sending email:", str(e))
+
+@app.route("/send-interview-email", methods=["POST"])
+def send_interview_email_endpoint():
+    data = request.get_json()
+    candidate_email = data.get("candidate_email")
+    interview_link = data.get("interview_link")
+
+    if not candidate_email or not interview_link:
+        return jsonify({"error": "candidate_email and interview_link are required"}), 400
+
+    try:
+        send_interview_email(candidate_email, interview_link)
+        return jsonify({"status": "success", "message": "Interview email sent."})
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
