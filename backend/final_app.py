@@ -40,9 +40,12 @@ from langchain_aws import ChatBedrock, BedrockLLM
 from app.aws_parsing import evaluate_resume_skills_with_time, calculate_relevance
 from app.aws_skillset import final_claude
 from app.aws_chunck_ext import final_chunks
+from app.aws_email import extract_candidate_identity_from_chunks
+
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
 # ============================
 #       INITIAL SETUP
 # ============================
@@ -385,11 +388,14 @@ def evaluate_resumes():
                 )
                 score, reasons = calculate_relevance(weights_json)
                 cost = (in_tokens * 0.00318) + (out_tokens * 0.0042)
+                email = extract_candidate_identity_from_chunks(doc_content)
                 return {
                     "Candidate Name": os.path.splitext(resume_file.filename)[0],
                     "Similarity (%)": round(score, 2),
                     "Reasons": reasons,
-                    "Cost": round(cost, 4)
+                    "Cost": round(cost, 4),
+                    "name": email.get("name", ""),
+                    "Email": email.get("email", "")
                 }
             except Exception as e:
                 return {
