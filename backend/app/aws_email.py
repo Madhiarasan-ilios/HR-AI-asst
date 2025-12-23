@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from langchain_aws import ChatBedrock
 from langchain_core.messages import AIMessage
 
+
 # --- Load environment variables ---
 load_dotenv()
 

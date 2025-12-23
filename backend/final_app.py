@@ -40,7 +40,7 @@ from langchain_aws import ChatBedrock, BedrockLLM
 from app.aws_parsing import evaluate_resume_skills_with_time, calculate_relevance
 from app.aws_skillset import final_claude
 from app.aws_chunck_ext import final_chunks
-
+from app.aws_email import extract_candidate_identity_from_chunks
 
 import smtplib
 from email.mime.text import MIMEText
