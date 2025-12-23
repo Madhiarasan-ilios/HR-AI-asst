@@ -29,6 +29,8 @@ from aws_services.transcribe import start_transcription
 from langchain_logic.chains import (
     get_question_generation_chain,
     get_report_generation_chain,
+    get_short_answer_evaluation_chain,
+    get_structured_extraction_chain,
 )
 
 # ---- LangChain AWS models (Code1) ----
@@ -38,7 +40,11 @@ from langchain_aws import ChatBedrock, BedrockLLM
 from app.aws_parsing import evaluate_resume_skills_with_time, calculate_relevance
 from app.aws_skillset import final_claude
 from app.aws_chunck_ext import final_chunks
-from app.aws_email import extract_candidate_identity_from_chunks
+
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # ============================
 #       INITIAL SETUP
@@ -83,6 +89,34 @@ llama_llm = BedrockLLM(
     aws_secret_access_key=AWS_SECRET_KEY,
     region=AWS_REGION
 )
+
+# ============================
+#      INTERVIEW SESSION MEMORY
+# ============================
+
+SESSION_STORE: Dict[str, Dict[str, Any]] = {}
+
+
+def init_session(session_id: str = "active"):
+    """
+    Initialize or reset an interview session.
+    For now we use a single 'active' session ID.
+    """
+    SESSION_STORE[session_id] = {
+        "current_question_index": 0,
+        "questions": [],
+        "transcript": [],  # list of {question, answer}
+        "structured": {
+            "name": "",
+            "experience": "",
+            "current_ctc": "",
+            "expected_ctc": "",
+            "notice_period": "",
+            "skills": [],
+            "project_highlight": ""
+        }
+    }
+
 
 # ============================
 #      SHARED HELPERS
@@ -266,6 +300,7 @@ FEW_SHOT_EXAMPLES = [
     }
 ]
 
+
 @app.route("/source_candidates", methods=["POST"])
 def source_candidates():
     try:
@@ -414,6 +449,10 @@ def generate_questions():
     chain = get_question_generation_chain(model_id=MODEL_ID, region_name=REGION)
     result = chain.invoke({"jd": jd_text, "resume": resume_text})
 
+    # NEW: initialize interview session and store questions
+    init_session("active")
+    SESSION_STORE["active"]["questions"] = result.questions
+
     return jsonify({"questions": result.questions})
 
 
@@ -485,11 +524,10 @@ def transcribe_audio():
             pass
 
 
-# NEW: POLL TRANSCRIPTION RESULT
+# NEW: POLL TRANSCRIPTION RESULT (ENHANCED FLOW)
 @app.route("/get-transcription-result", methods=["GET"])
 def get_transcription_result():
-    data = request.get_json()
-    job_name = data.get("job_name")
+    job_name = request.args.get("job_name")
     if not job_name:
         return jsonify({"error": "job_name is required"}), 400
 
@@ -506,40 +544,205 @@ def get_transcription_result():
         return jsonify({"status": status}), 200
 
     transcript_url = response["TranscriptionJob"]["Transcript"]["TranscriptFileUri"]
-    # Download transcript JSON
     transcript_resp = requests.get(transcript_url).json()
     text = transcript_resp["results"]["transcripts"][0]["transcript"]
 
+    # If no active session, just return baseline behavior
+    if "active" not in SESSION_STORE or not SESSION_STORE["active"]["questions"]:
+        return jsonify({
+            "status": "COMPLETED",
+            "transcript": text
+        })
+
+    state = SESSION_STORE["active"]
+
+    # Store Q&A in transcript
+    current_idx = state["current_question_index"]
+    if current_idx < len(state["questions"]):
+        current_question = state["questions"][current_idx]
+    else:
+        current_question = ""
+
+    state["transcript"].append({
+        "question": current_question,
+        "answer": text
+    })
+
+    # Short answer evaluation
+    try:
+        short_chain = get_short_answer_evaluation_chain(model_id=MODEL_ID, region_name=REGION)
+        evaluation = short_chain.invoke({"answer": text})
+    except Exception as e:
+        logger.error(f"Short answer evaluation error: {e}")
+        evaluation = None
+
+    if evaluation and getattr(evaluation, "needs_more_detail", False):
+        return jsonify({
+            "status": "COMPLETED",
+            "transcript": text,
+            "action": "elaborate",
+            "next_question": "Could you please elaborate more on that?"
+        })
+
+    # Structured extraction
+    try:
+        extraction_chain = get_structured_extraction_chain(model_id=MODEL_ID, region_name=REGION)
+        structured = extraction_chain.invoke({"answer": text})
+
+        for key, value in structured.model_dump().items():
+            if value:
+                if isinstance(value, list):
+                    existing = state["structured"].get(key, [])
+                    state["structured"][key] = list({*existing, *value})
+                else:
+                    state["structured"][key] = value
+    except Exception as e:
+        logger.error(f"Structured extraction error: {e}")
+
+    # Move to next question
+    state["current_question_index"] += 1
+
+    # If finished all questions
+    if state["current_question_index"] >= len(state["questions"]):
+        return jsonify({
+            "status": "COMPLETED",
+            "transcript": text,
+            "action": "complete",
+            "message": "Interview completed. Please call /generate-report to get the final summary."
+        })
+
+    next_question = state["questions"][state["current_question_index"]]
+
     return jsonify({
         "status": "COMPLETED",
-        "transcript": text
+        "transcript": text,
+        "action": "continue",
+        "next_question": next_question
     })
+
+@app.route("/end-session", methods=["POST"])
+def end_session():
+    """
+    Explicitly terminate the current interview session and clear stored state.
+    Called when interviewer manually ends session or candidate drops off.
+    """
+    if "active" in SESSION_STORE:
+        SESSION_STORE.pop("active", None)
+        logging.info("Interview session cleared successfully")
+        return jsonify({
+            "status": "success",
+            "message": "Interview session ended. Memory cleared."
+        }), 200
+
+    return jsonify({
+        "status": "no_session",
+        "message": "No active interview session found."
+    }), 200
 
 
 @app.route("/generate-report", methods=["POST"])
 def generate_report():
-    
-    data = request.get_json()
-    transcript = data.get("transcript")
+    """
+    Generate final report. If 'transcript' is provided in the body (old behavior),
+    we still accept it. Otherwise we will use the stored SESSION_STORE transcript.
+    """
+    data = request.get_json() or {}
+    external_transcript = data.get("transcript")
 
-    if not transcript:
-        return jsonify({"error": "Transcript is required"}), 400
+    # If client sends transcript string (old behavior), we can still use it
+    if external_transcript:
+        transcript_for_llm = external_transcript
+    else:
+        # Build transcript text from stored Q&A
+        session_data = SESSION_STORE.get("active")
+        if not session_data:
+            return jsonify({"error": "No interview session data found"}), 400
+
+        lines = []
+        for qa in session_data["transcript"]:
+            q = qa.get("question", "")
+            a = qa.get("answer", "")
+            if q:
+                lines.append(f"Q: {q}")
+            if a:
+                lines.append(f"A: {a}")
+        transcript_for_llm = "\n".join(lines)
 
     try:
         chain = get_report_generation_chain(model_id=MODEL_ID, region_name=REGION)
         report = chain.invoke({
-            "transcript": transcript
+            "transcript": transcript_for_llm
         })
+
+        structured = SESSION_STORE.get("active", {}).get("structured", {})
 
         return jsonify({
             "summary": report.summary,
             "key_strengths": report.key_strengths,
             "areas_for_improvement": report.areas_for_improvement,
-            "recommendation": report.recommendation
+            "recommendation": report.recommendation,
+            "structured": structured
         })
 
     except Exception as e:
+        logger.error(f"Error generating report: {e}")
         return jsonify({"error": str(e)}), 500
+    
+def send_interview_email(candidate_email, interview_link):
+    # Your Gmail credentials
+    sender_email = "madhiarasan2248@gmail.com"
+    sender_password = "vggx uopv pina zlyf"  # NOT your normal gmail password
+
+    # Email content
+    subject = "Interview Invitation"
+    body = f"""
+    Hi,
+
+    We are pleased to invite you for the interview.
+    If you are interested, please attend using the following link:
+
+    {interview_link}
+
+    Best regards,
+    HR Team
+    """
+
+    # Build the email
+    message = MIMEMultipart()
+    message["From"] = sender_email
+    message["To"] = candidate_email
+    message["Subject"] = subject
+    message.attach(MIMEText(body, "plain"))
+
+    try:
+        # Connect to Gmail SMTP Server
+        server = smtplib.SMTP("smtp.gmail.com", 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+
+        # Send the mail
+        server.send_message(message)
+        server.quit()
+
+        print("Email sent successfully.")
+    except Exception as e:
+        print("Error occurred while sending email:", str(e))
+
+@app.route("/send-interview-email", methods=["POST"])
+def send_interview_email_endpoint():
+    data = request.get_json()
+    candidate_email = data.get("candidate_email")
+    interview_link = data.get("interview_link")
+
+    if not candidate_email or not interview_link:
+        return jsonify({"error": "candidate_email and interview_link are required"}), 400
+
+    try:
+        send_interview_email(candidate_email, interview_link)
+        return jsonify({"status": "success", "message": "Interview email sent."})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # ============================
 #           MAIN
