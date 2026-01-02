@@ -36,11 +36,9 @@ def extract_candidate_identity_from_chunks(doc_chunks):
     Uses ONLY the first chunk to extract candidate's name & email.
     """
     if not doc_chunks:
-        return {"name": "", "email": ""}
+        return {"name": "", "email": ""} 
 
-    first_chunk = doc_chunks[0] if isinstance(doc_chunks, list) else doc_chunks 
-
-    text = first_chunk.page_content if hasattr(first_chunk, "page_content") else str(first_chunk)
+    text = doc_chunks.page_content if hasattr(doc_chunks, "page_content") else str(doc_chunks)
 
     prompt = f"""
 You are an expert information extraction assistant specializing in resumes and candidate profiles.
