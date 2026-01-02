@@ -382,13 +382,14 @@ def evaluate_resumes():
             try:
                 path = save_upload_to_temp(resume_file)
                 temp_files.append(path)
-                doc_content = final_chunks(path)
+                parsed = final_chunks(path)
+                doc_content = parsed["experience_chunks"]
                 weights_json, in_tokens, out_tokens = evaluate_resume_skills_with_time(
                     llama_llm, doc_content, ranking_skills
                 )
                 score, reasons = calculate_relevance(weights_json)
                 cost = (in_tokens * 0.00318) + (out_tokens * 0.0042)
-                email = extract_candidate_identity_from_chunks(doc_content)
+                email = extract_candidate_identity_from_chunks(parsed["header_chunk"])
                 return {
                     "Candidate Name": os.path.splitext(resume_file.filename)[0],
                     "Similarity (%)": round(score, 2),
