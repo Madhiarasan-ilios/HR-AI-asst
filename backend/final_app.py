@@ -33,6 +33,13 @@ from langchain_logic.chains import (
     get_structured_extraction_chain,
 )
 
+textract_client = boto3.client(
+            "textract",
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            region_name=os.getenv("AWS_REGION")
+        )
+
 # ---- LangChain AWS models (Code1) ----
 from langchain_aws import ChatBedrock, BedrockLLM
 
@@ -445,7 +452,29 @@ def generate_questions():
 
     # Convert files to text
     jd_text = jd_file.read().decode("utf-8", errors="ignore")
-    resume_text = resume_file.read().decode("utf-8", errors="ignore")
+
+    try:
+        resume_bytes = resume_file.read()
+
+        if not resume_bytes:
+            return jsonify({"error": "Resume file is empty"}), 400
+
+        textract_response = textract_client.detect_document_text(
+            Document={"Bytes": resume_bytes}
+        )
+
+        # Extract text from Textract response
+        resume_text = " ".join(
+            block["Text"]
+            for block in textract_response.get("Blocks", [])
+            if block["BlockType"] == "LINE"
+        )
+
+    except Exception as e:
+        return jsonify({"error": f"Resume processing failed: {str(e)}"}), 400
+
+    
+    #resume_text = resume_file.read().decode("utf-8", errors="ignore")
 
     chain = get_question_generation_chain(model_id=MODEL_ID, region_name=REGION)
     result = chain.invoke({"jd": jd_text, "resume": resume_text})
