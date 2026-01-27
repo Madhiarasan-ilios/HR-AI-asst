@@ -6,6 +6,7 @@ from langchain.docstore.document import Document
 import docx
 import boto3
 import os
+import io
 
 embeddings = BedrockEmbeddings(model_id="amazon.titan-embed-text-v2:0")
 
