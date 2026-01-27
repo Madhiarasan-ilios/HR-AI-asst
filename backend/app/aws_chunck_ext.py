@@ -6,6 +6,7 @@ from langchain.docstore.document import Document
 import docx
 import boto3
 import os
+import io
 
 embeddings = BedrockEmbeddings(model_id="amazon.titan-embed-text-v2:0")
 
@@ -79,25 +80,46 @@ def contains_relevant_keywords(chunk, keywords):
     """Check if the chunk contains relevant keywords."""
     return any(keyword.lower() in chunk.lower() for keyword in keywords)
 
+def filter_recent_chunks(chunks, years=5):
+    """Keep only chunks that mention recent (last n years) experience or certification."""
+    current_year = datetime.now().year
+    filtered_chunks = []
 
+    for chunk in chunks:
+        date_matches = re.findall(combined_date_pattern, chunk)
+        if contains_relevant_keywords(chunk, work_certification_keywords):
+            for match in date_matches:
+                if isinstance(match, tuple):
+                    match = next((m for m in match if m), None)
+                if not match:
+                    continue
+
+                year = None
+                if re.match(r'^\d{4}$', match):
+                    year = int(match)
+                elif re.search(r'/(\d{4})', match):
+                    year = int(re.search(r'/(\d{4})', match).group(1))
+
+                if year and (current_year - year) <= years:
+                    filtered_chunks.append(chunk)
+                    break
+
+    return filtered_chunks
 
 def find_relevant_experience(file_path, query, chunk_size=2000, overlap=500, top_k=10, years=5):
     """Perform full pipeline: read, chunk, search, and filter resume content."""
     document_content = read_document(file_path)
     chunks = split_into_chunks(document_content, chunk_size, overlap)
     top_chunks = perform_semantic_search(chunks, query, k=top_k)
-    
-
-    return top_chunks
+    recent_chunks = filter_recent_chunks(top_chunks, years)
+    first_chunk = chunks[0] if chunks else ""
+    return recent_chunks, first_chunk
 
 def final_chunks(file_path):
     """Wrapper for Streamlit app to return relevant experience chunks."""
     query = "Retrieve relevant work experience or certifications from the last 5 years"
-    recent_chunks = find_relevant_experience(file_path, query)
-    full_text = read_document(file_path)
-
-    header_text = full_text[:3000] 
-    return {"experience_chunks": recent_chunks, "header_chunk": header_text}
+    recent_chunks, first_chunk=find_relevant_experience(file_path, query)
+    return {"experience_chunks": recent_chunks, "header_chunk": first_chunk}
 
 def header_chunks(file_path):
     """Wrapper for Streamlit app to return all chunks for header processing."""
